@@ -17,7 +17,7 @@ const allowedOps = [
   'notin'
 ]
 
-const program  = '  and(name ~= "Luther Blissett" , or(books.title ~= "best escaped \\"string", books.year != 2020))'
+const program  = '  and(name ~= "Luther Blissett" , books.year in ["2001", 1991], or(books.title ~= "best escaped \\"string", books.year != 2020))'
 const createToken = ({row, col}, token) => ({token, row, col: col - token.length})
 
 const lex = str => str
@@ -34,7 +34,7 @@ const lex = str => str
       })
     }
 
-    if (['(', ')', ',', '='].indexOf(c) !== -1 && !obj.quoteOpen) {
+    if (['(', ')', '[', ']', ',', '='].indexOf(c) !== -1 && !obj.quoteOpen) {
       const addit = [obj.value, c].filter(i => i.trim() !== '')
       return c === '=' && ['!', '~'].indexOf(obj.value) !== -1
         ? Object.assign(obj, {
@@ -91,10 +91,32 @@ const parse = tokens => {
 
   const consume = () => tokens[c++]
 
+  const parseBracket = _ => {
+    const b = []
+    while ([']', null].indexOf(peek()) === -1) {
+      const t = consume()
+      if ([']', ','].indexOf(t.token) !== -1) {
+        throw new SyntaxError(`Unexpected ',' or ']'.`)
+      }
+      if ([']', ','].indexOf(peek()) === -1) {
+        throw new SyntaxError(`Expected a separating ',' or an ending ']'.`)
+      }
+      if (peek() === ',') {
+        consume()
+      }
+      b.push(t)
+    }
+    if( peek() !== ']') {
+      throw new SyntaxError(`Expected an ending ].`)
+    }
+    consume() // eat the last ]
+    return b
+  }
+
   const parseOp = () => {
     const left = consume()
     const op = consume()
-    const right = consume()
+    let right = consume()
 
     if (!left || left === null) {
       const p = tokens[tokens.length - 1]
@@ -111,6 +133,12 @@ const parse = tokens => {
 
     if (allowedOps.indexOf(op.token) === -1) {
       throw new SyntaxError("invalid operator: " + op.token)
+    }
+    if (op.token === 'in' || op.token === 'nin') {
+      if (right.token !== '[') {
+        throw new SyntaxError(`The 'in' and 'nin' operators require brackets on the right hand, eg. [one, two]`)
+      }
+      right = parseBracket()
     }
     // we check ahead and make sure all is kosher
     if ([',', ')', null].indexOf(peek()) === -1) {
@@ -152,7 +180,6 @@ const parse = tokens => {
       consume()
       return {type: And, para: parsePara()}
     }
-
     return parseOp()
   }
   return parseExpr()
@@ -163,14 +190,23 @@ const transpile = escape => ast => {
   const opMap = {
     '=' : '=',
     '!=' : '!=',
-    '~=' : 'ilike'
+    '~=' : 'ilike',
+    'in' : 'IN',
+    'nin' : 'NOT IN'
   }
   const transpileNode = ast => ast.type === And
     ? transpileAnd(ast)
     : ast.type === Or
       ? transpileOr(ast)
       : transpileOp(ast)
-  const transpileOp = ({left, op, right}) => `${left.token} ${opMap[op.token]} ${escape(right.token)}`
+
+  const transpileOp = ({left, op, right}) => op.token === 'in' || op.token === 'nin'
+    ? `${left.token} ${opMap[op.token]} ${transpileBracket(right)}`
+    : `${left.token} ${opMap[op.token]} ${escape(right.token)}`
+
+  const bracketVal = v => escape(v.token)
+  const transpileBracket = a => `(${a.map(bracketVal)})`
+
   const transpilePara = AndOr => ast => `(${ast.para.map(transpileNode).join( AndOr === And ? ' AND ' : ' OR ' )})`
   const transpileAnd = transpilePara(And)
   const transpileOr = transpilePara(Or)
